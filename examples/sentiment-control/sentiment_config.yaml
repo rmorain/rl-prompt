@@ -1,0 +1,28 @@
+# Sentiment Config
+defaults:
+ - base_fsc
+ - _self_
+# Data
+num_shots: 16
+base_path: "./data"
+dataset: "imdb_sst2_processed"
+dataset_seed: 0
+# Reward
+task_lm: "gpt2-large"
+# Input Conditioned Prompt Model
+prompt_length: 15
+# SQL Module
+reward_shaping_old_min: 0
+reward_shaping_old_max: 1
+reward_shaping_new_min: 0
+reward_shaping_new_max: 5
+top_k: 256
+# Trainer
+max_train_steps: 12000
+train_shuffle: true
+eval_steps: 10
+save_steps: 100
+learning_rate: 5e-5
+random_seed: null
+do_eval: false
+policy_lm: "gpt2"

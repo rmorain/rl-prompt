@@ -1,32 +1,42 @@
 from dataclasses import dataclass
 from typing import Optional
-from rlprompt.models import BaseModel, LMAdaptorModel, SinglePromptModel, InputConditionedPromptModel
+
+from rlprompt.models import (
+    BaseModel,
+    InputConditionedPromptModel,
+    LMAdaptorModel,
+    SinglePromptModel,
+)
+
 
 def make_lm_adaptor_model(config: "DictConfig") -> LMAdaptorModel:
-    return LMAdaptorModel(config.policy_lm,
-                          config.hidden_size,
-                          config.logit_bias,
-                          config.fluent,
-                          config.fluent_top_k,
-                          config.max_decoding_length,
-                          config.eos_token_id)
+    return LMAdaptorModel(
+        config.policy_lm,
+        config.hidden_size,
+        config.logit_bias,
+        config.fluent,
+        config.fluent_top_k,
+        config.max_decoding_length,
+        config.eos_token_id,
+    )
 
 
-def make_single_prompt_model(model: BaseModel,
-                             config: "DictConfig") -> SinglePromptModel:
-    return SinglePromptModel(model,
-                             config.prompt_length,
-                             config.prompt_train_batch_size,
-                             config.prompt_infer_batch_size,
-                             config.source_str)
+def make_single_prompt_model(
+    model: BaseModel, config: "DictConfig"
+) -> SinglePromptModel:
+    return SinglePromptModel(
+        model,
+        config.prompt_length,
+        config.prompt_train_batch_size,
+        config.prompt_infer_batch_size,
+        config.source_str,
+    )
 
 
-def make_input_conditioned_prompt_model(model: BaseModel,
-                                        config: "DictConfig") -> InputConditionedPromptModel:
-    return InputConditionedPromptModel(model,
-                                       config.prompt_length,
-                                       config.source_train_reps,
-                                       config.source_infer_reps)
+def make_input_conditioned_prompt_model(
+    model: BaseModel, config: "DictConfig"
+) -> InputConditionedPromptModel:
+    return InputConditionedPromptModel(model, config.prompt_length, 1, 1)
 
 
 @dataclass
@@ -55,7 +65,7 @@ class SinglePromptModelConfig:
     prompt_infer_batch_size: int = 8
     source_str: str = "<|endoftext|>"
 
-    
+
 @dataclass
 class InputConditionedPromptModelConfig:
     prompt_length: int = 5

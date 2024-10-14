@@ -1,22 +1,25 @@
-import torch
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from typing import Optional, Callable, Dict, Any, Union, List
-import os
-import wandb
 import json
+import os
+from typing import Any, Callable, Dict, List, Optional, Union
+
 import click
+import numpy as np
+import psutil
+import torch
+import wandb
+from torch.utils.data import DataLoader, Dataset
 
 from rlprompt.modules import BaseModule
 from rlprompt.utils import utils
+
 from .trainer_utils import get_default_train_op, set_random_seed
 
 
 class Trainer:
-    """Trainer that runs for a specified number of epochs. 
+    """Trainer that runs for a specified number of epochs.
 
     Each epoch can run for a specified number of batches.
-    Evaluation is done at the end of each epoch """
+    Evaluation is done at the end of each epoch"""
 
     def __init__(
         self,
@@ -48,10 +51,12 @@ class Trainer:
         # Wandb reporting
         report_to_wandb: bool,
         project_name: Optional[str],
-        run_name: Optional[str]
+        run_name: Optional[str],
+        collate_fn,
     ):
-        assert do_eval == False or eval_dataset is not None, \
-            "Need to have eval_dataset if do_eval is True"
+        assert (
+            do_eval == False or eval_dataset is not None
+        ), "Need to have eval_dataset if do_eval is True"
         self.module = module
 
         self.train_dataset = train_dataset
@@ -69,11 +74,11 @@ class Trainer:
         self.do_save = do_save
         self.save_dir = save_dir
         self.save_steps = save_steps
+        self.collate_fn = collate_fn
 
-        self.train_op = get_default_train_op(self.module._model,
-                                             learning_rate,
-                                             gradient_clip,
-                                             gradient_clip_norm)
+        self.train_op = get_default_train_op(
+            self.module._model, learning_rate, gradient_clip, gradient_clip_norm
+        )
 
         if checkpoint_path is not None:
             self._load_checkpoint(checkpoint_path)
@@ -86,22 +91,21 @@ class Trainer:
         self.run_name = run_name
 
     def _load_checkpoint(self, checkpoint_path: str) -> None:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
         self.module.load_state_dict(checkpoint["model_state_dict"])
         print(click.style(f"Loaded module from {checkpoint_path}", fg="green"))
 
     def _get_train_dataloader(self) -> DataLoader:
-        return DataLoader(self.train_dataset,
-                          shuffle=self.train_shuffle,
-                          batch_size=self.train_batch_size,
-                          drop_last=self.train_drop_last)
+        return DataLoader(
+            self.train_dataset,
+            shuffle=self.train_shuffle,
+            batch_size=self.train_batch_size,
+            drop_last=self.train_drop_last,
+            collate_fn=self.collate_fn,
+        )
 
     # @torch.no_grad
-    def _train_step(
-        self,
-        step: int,
-        batch: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _train_step(self, step: int, batch: Dict[str, Any]) -> Dict[str, Any]:
         model = self.module.train()
         model._pre_steps(step)
 
@@ -111,19 +115,21 @@ class Trainer:
 
         return batch_log
 
-    def train(self,
-              report_to_wandb: Optional[bool] = None,
-              project_name: Optional[str] = None,
-              run_name: Optional[str] = None,
-              config: Optional["DictConfig"] = None) -> None:
+    def train(
+        self,
+        report_to_wandb: Optional[bool] = None,
+        project_name: Optional[str] = None,
+        run_name: Optional[str] = None,
+        config: Optional["DictConfig"] = None,
+    ) -> None:
         # Configure Wandb reporting
         if report_to_wandb is None:
             report_to_wandb = self.report_to_wandb
         if project_name is None:
             project_name = self.project_name
-        if run_name is None: 
+        if run_name is None:
             run_name = self.run_name
-        if config is not None: 
+        if config is not None:
             config = eval(str(config))
         if report_to_wandb:
             wandb.init(project=project_name, name=run_name, config=config)
@@ -143,9 +149,9 @@ class Trainer:
             total_train_epochs = self.num_train_epochs
         else:
             num_batches_per_epoch = len(train_dataloader)
-            total_train_epochs = \
-                (self.max_train_steps // num_batches_per_epoch
-                 + int(self.max_train_steps % num_batches_per_epoch > 0))
+            total_train_epochs = self.max_train_steps // num_batches_per_epoch + int(
+                self.max_train_steps % num_batches_per_epoch > 0
+            )
 
         # Determine whether to evaluate by epoch or steps
         eval_by_steps = self.eval_steps > 0
@@ -155,51 +161,81 @@ class Trainer:
         total_steps = 0
         for epoch in range(total_train_epochs):
             for step, batch in enumerate(train_dataloader):
-                batch_log = self._train_step(step, batch)
+                try:
+                    batch_log = self._train_step(step, batch)
+                except Exception as e:
+                    print("training failed")
+                    print(e)
+                    import pudb
+
+                    pu.db
                 if report_to_wandb:
                     wandb.log(batch_log)
                 total_steps += 1
 
-                if self.do_eval and eval_by_steps \
-                        and total_steps % self.eval_steps == 0:
-                    output_save_path = \
-                        os.path.join(eval_save_dir,
-                                     f'outputs.step.{total_steps}.json')
+                if total_steps % 10 == 0:
+                    available = (
+                        psutil.virtual_memory().available
+                        * 100
+                        / psutil.virtual_memory().total
+                    )
+                    print(f"Epoch: {epoch}")
+                    print(f" Batch: {total_steps} \t RAM available: {available:.3f}%")
+                    gpu_memory = torch.cuda.max_memory_allocated() / 1e9
+                    print(f"Max GPU memory:\t{gpu_memory:.3f} GB")
+
+                if (
+                    self.do_eval
+                    and eval_by_steps
+                    and total_steps % self.eval_steps == 0
+                ):
+                    output_save_path = os.path.join(
+                        eval_save_dir, f"outputs.step.{total_steps}.json"
+                    )
                     eval_log = self.evaluate(output_save_path=output_save_path)
                     if report_to_wandb:
                         wandb.log(eval_log)
 
-                if self.do_save and save_by_steps \
-                        and total_steps % self.save_steps == 0:
-                    torch.save({"steps": total_steps,
-                                "model_state_dict": self.module.state_dict()},
-                               os.path.join(ckpt_save_dir,
-                                            f"ckpt.step.{total_steps}.pth"))
+                if (
+                    self.do_save
+                    and save_by_steps
+                    and total_steps % self.save_steps == 0
+                ):
+                    torch.save(
+                        {
+                            "steps": total_steps,
+                            "model_state_dict": self.module.state_dict(),
+                        },
+                        os.path.join(ckpt_save_dir, f"ckpt.step.{total_steps}.pth"),
+                    )
 
                 if total_steps == self.max_train_steps:
                     break
 
             if self.do_eval and not eval_by_steps:
-                output_save_path = os.path.join(eval_save_dir,
-                                                f'outputs.epoch.{epoch+1}.json')
+                output_save_path = os.path.join(
+                    eval_save_dir, f"outputs.epoch.{epoch+1}.json"
+                )
                 eval_log = self.evaluate(output_save_path=output_save_path)
                 wandb.log(eval_log)
 
             if self.do_save and not save_by_steps:
-                torch.save({"steps": total_steps,
-                            "model_state_dict": self.module.state_dict()},
-                           os.path.join(ckpt_save_dir,
-                                        f"ckpt.epoch.{epoch+1}.pth"))
+                torch.save(
+                    {
+                        "steps": total_steps,
+                        "model_state_dict": self.module.state_dict(),
+                    },
+                    os.path.join(ckpt_save_dir, f"ckpt.epoch.{epoch+1}.pth"),
+                )
 
     def _get_eval_dataloader(self, eval_dataset: Dataset) -> DataLoader:
-        return DataLoader(eval_dataset,
-                          batch_size=self.eval_batch_size)
+        return DataLoader(eval_dataset, batch_size=self.eval_batch_size)
 
     def evaluate(
         self,
         eval_dataset: Optional[Dataset] = None,
         output_save_path: Optional[str] = None,
-        compute_scores: bool = True
+        compute_scores: bool = True,
     ) -> Dict[str, np.number]:
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
@@ -211,31 +247,30 @@ class Trainer:
         for batch in eval_dataloader:
             infer_outputs: Dict[str, Union[torch.Tensor, List[List[str]]]]
             infer_outputs = model.infer(batch)
-            hypos += infer_outputs['sample_tokens']
+            hypos += infer_outputs["sample_tokens"]
 
             score, score_log = model.compute_rewards(
-                batch=batch,
-                output_tokens=infer_outputs['sample_tokens'])
+                batch=batch, output_tokens=infer_outputs["sample_tokens"]
+            )
             scores += score.detach().tolist()
 
         if output_save_path is not None:
-            json.dump({'output_tokens': hypos,
-                       'scores': scores},
-                      open(output_save_path, 'w'))
+            json.dump(
+                {"output_tokens": hypos, "scores": scores}, open(output_save_path, "w")
+            )
 
         score = score.mean().item()
 
-        utils.add_prefix_to_dict_keys_inplace(
-            score_log,
-            prefix=f"eval/rewards/")
+        utils.add_prefix_to_dict_keys_inplace(score_log, prefix=f"eval/rewards/")
 
-        print('Finish Eval')
-        return utils.unionize_dicts([
-            score_log,
-            # gem_scores_dict,
-            {
-                f"eval/score": score,
-                f"eval/output_length": np.mean([len(tokens) \
-                                                for tokens in hypos])
-            }
-        ])
+        print("Finish Eval")
+        return utils.unionize_dicts(
+            [
+                score_log,
+                # gem_scores_dict,
+                {
+                    f"eval/score": score,
+                    f"eval/output_length": np.mean([len(tokens) for tokens in hypos]),
+                },
+            ]
+        )
